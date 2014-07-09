@@ -323,6 +323,9 @@ namespace zmq {
 
     int rc = zmq_poll(&item, 1, 0);
     if (rc < 0) {
+      if (EINTR == zmq_errno()) {
+        return this->IsReady();
+      }
       throw std::runtime_error(ErrorMessage());
     }
     return item.revents & item.events;
