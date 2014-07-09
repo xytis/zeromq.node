@@ -131,8 +131,10 @@ namespace zmq {
 
       static NAN_METHOD(UnbindSync);
 #endif
+      static int _connect(void *socket, const char *endpoint);
       static NAN_METHOD(Connect);
 #if ZMQ_CAN_DISCONNECT
+      static int _disconnect(void *socket, const char *endpoint);
       static NAN_METHOD(Disconnect);
 #endif
 
@@ -779,6 +781,17 @@ namespace zmq {
   }
 #endif
 
+  int
+  Socket::_connect(void *socket, const char *endpoint) {
+    if (zmq_connect(socket, endpoint) < 0) {
+      if (EINTR == zmq_errno()) {
+        return Socket::_connect(socket, endpoint);
+      }
+      return -1;
+    }
+    return 0;
+  }
+
   NAN_METHOD(Socket::Connect) {
     NanScope();
     if (!args[0]->IsString()) {
@@ -788,7 +801,7 @@ namespace zmq {
     GET_SOCKET(args);
 
     String::Utf8Value address(args[0].As<String>());
-    if (zmq_connect(socket->socket_, *address)) {
+    if (Socket::_connect(socket->socket_, *address)) {
       return NanThrowError(ErrorMessage());
     }
 
@@ -800,6 +813,18 @@ namespace zmq {
   }
 
 #if ZMQ_CAN_DISCONNECT
+
+  int
+  Socket::_disconnect(void *socket, const char *endpoint) {
+    if (zmq_disconnect(socket, endpoint) < 0) {
+      if (EINTR == zmq_errno()) {
+        return Socket::_disconnect(socket, endpoint);
+      }
+      return -1;
+    }
+    return 0;
+  }
+
   NAN_METHOD(Socket::Disconnect) {
     NanScope();
 
@@ -810,7 +835,7 @@ namespace zmq {
     GET_SOCKET(args);
 
     String::Utf8Value address(args[0].As<String>());
-    if (zmq_disconnect(socket->socket_, *address)) {
+    if (Socket::_disconnect(socket->socket_, *address)) {
       return NanThrowError(ErrorMessage());
     }
 
