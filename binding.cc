@@ -55,6 +55,7 @@
 #define ZMQ_CAN_DISCONNECT (ZMQ_VERSION_MAJOR == 3 && ZMQ_VERSION_MINOR >= 2) || ZMQ_VERSION_MAJOR > 3
 #define ZMQ_CAN_UNBIND (ZMQ_VERSION_MAJOR == 3 && ZMQ_VERSION_MINOR >= 2) || ZMQ_VERSION_MAJOR > 3
 #define ZMQ_CAN_MONITOR (ZMQ_VERSION > 30201)
+#define ZMQ_EINTR_RETRY_LIMIT 5
 
 using namespace v8;
 using namespace node;
@@ -117,6 +118,7 @@ namespace zmq {
       static NAN_METHOD(SetSockOpt);
 
       struct BindState;
+      static int _bind(void *socket, const char *endpoint, int retry = 0);
       static NAN_METHOD(Bind);
 
       static void UV_BindAsync(uv_work_t* req);
@@ -124,6 +126,7 @@ namespace zmq {
 
       static NAN_METHOD(BindSync);
 #if ZMQ_CAN_UNBIND
+      static int _unbind(void *socket, const char *endpoint, int retry = 0);
       static NAN_METHOD(Unbind);
 
       static void UV_UnbindAsync(uv_work_t* req);
@@ -131,18 +134,18 @@ namespace zmq {
 
       static NAN_METHOD(UnbindSync);
 #endif
-      static int _connect(void *socket, const char *endpoint);
+      static int _connect(void *socket, const char *endpoint, int retry = 0);
       static NAN_METHOD(Connect);
 #if ZMQ_CAN_DISCONNECT
-      static int _disconnect(void *socket, const char *endpoint);
+      static int _disconnect(void *socket, const char *endpoint, int retry = 0);
       static NAN_METHOD(Disconnect);
 #endif
 
       class IncomingMessage;
-      static int _recv(void *socket, zmq_msg_t *msg, int flags);
+      static int _recv(void *socket, zmq_msg_t *msg, int flags, int retry = 0);
       static NAN_METHOD(Recv);
       class OutgoingMessage;
-      static int _send(void *socket, zmq_msg_t *msg, int flags);
+      static int _send(void *socket, zmq_msg_t *msg, int flags, int retry = 0);
       static NAN_METHOD(Send);
       void Close();
       static NAN_METHOD(Close);
@@ -652,10 +655,21 @@ namespace zmq {
     NanReturnUndefined();
   }
 
+  int Socket::_bind(void *socket, const char *endpoint, int retry) {
+    if (zmq_bind(socket, endpoint) < 0) {
+      if (EINTR == zmq_errno() && retry < ZMQ_EINTR_RETRY_LIMIT) {
+        return Socket::_bind(socket, endpoint, retry+1);
+      }
+      return -1;
+    }
+    return 0;
+  }
+
   void Socket::UV_BindAsync(uv_work_t* req) {
     BindState* state = static_cast<BindState*>(req->data);
-    if (zmq_bind(state->sock, *state->addr) < 0)
+    if (Socket::_bind(state->sock, *state->addr) < 0) {
         state->error = zmq_errno();
+    }
   }
 
   void Socket::UV_BindAsyncAfter(uv_work_t* req) {
@@ -692,7 +706,7 @@ namespace zmq {
     String::Utf8Value addr(args[0].As<String>());
     GET_SOCKET(args);
     socket->state_ = STATE_BUSY;
-    if (zmq_bind(socket->socket_, *addr) < 0) {
+    if (Socket::_bind(socket->socket_, *addr) < 0) {
       return NanThrowError(ErrorMessage());
     }
 
@@ -707,6 +721,16 @@ namespace zmq {
   }
 
 #if ZMQ_CAN_UNBIND
+  int Socket::_unbind(void *socket, const char *endpoint, int retry) {
+    if (zmq_unbind(socket, endpoint) < 0) {
+      if (EINTR == zmq_errno() && retry < ZMQ_EINTR_RETRY_LIMIT) {
+        return Socket::_unbind(socket, endpoint, retry+1);
+      }
+      return -1;
+    }
+    return 0;
+  }
+
   NAN_METHOD(Socket::Unbind) {
     NanScope();
     if (!args[0]->IsString())
@@ -731,7 +755,7 @@ namespace zmq {
 
   void Socket::UV_UnbindAsync(uv_work_t* req) {
     BindState* state = static_cast<BindState*>(req->data);
-    if (zmq_unbind(state->sock, *state->addr) < 0)
+    if (Socket::_unbind(state->sock, *state->addr) < 0)
         state->error = zmq_errno();
   }
 
@@ -768,7 +792,7 @@ namespace zmq {
     String::Utf8Value addr(args[0].As<String>());
     GET_SOCKET(args);
     socket->state_ = STATE_BUSY;
-    if (zmq_unbind(socket->socket_, *addr) < 0) {
+    if (Socket::_unbind(socket->socket_, *addr) < 0) {
       return NanThrowError(ErrorMessage());
     }
 
@@ -781,11 +805,10 @@ namespace zmq {
   }
 #endif
 
-  int
-  Socket::_connect(void *socket, const char *endpoint) {
+  int Socket::_connect(void *socket, const char *endpoint, int retry) {
     if (zmq_connect(socket, endpoint) < 0) {
-      if (EINTR == zmq_errno()) {
-        return Socket::_connect(socket, endpoint);
+      if (EINTR == zmq_errno() && retry < ZMQ_EINTR_RETRY_LIMIT) {
+        return Socket::_connect(socket, endpoint, retry+1);
       }
       return -1;
     }
@@ -814,11 +837,10 @@ namespace zmq {
 
 #if ZMQ_CAN_DISCONNECT
 
-  int
-  Socket::_disconnect(void *socket, const char *endpoint) {
+  int Socket::_disconnect(void *socket, const char *endpoint, int retry) {
     if (zmq_disconnect(socket, endpoint) < 0) {
-      if (EINTR == zmq_errno()) {
-        return Socket::_disconnect(socket, endpoint);
+      if (EINTR == zmq_errno() && retry < ZMQ_EINTR_RETRY_LIMIT) {
+        return Socket::_disconnect(socket, endpoint, retry+1);
       }
       return -1;
     }
@@ -959,8 +981,7 @@ namespace zmq {
   }
 #endif
 
-  int
-  Socket::_recv(void *socket, zmq_msg_t *msg, int flags) {
+  int Socket::_recv(void *socket, zmq_msg_t *msg, int flags, int retry) {
   #if ZMQ_VERSION_MAJOR == 2
     if (zmq_recv(socket, msg, flags) < 0) {
   #elif ZMQ_VERSION_MAJOR == 3
@@ -968,8 +989,8 @@ namespace zmq {
   #else
     if (zmq_msg_recv(msg, socket, flags) < 0) {
   #endif
-      if (EINTR == zmq_errno()) {
-        return Socket::_recv(socket, msg, flags);
+      if (EINTR == zmq_errno() && retry < ZMQ_EINTR_RETRY_LIMIT) {
+        return Socket::_recv(socket, msg, flags, retry+1);
       }
       return -1;
     }
@@ -1055,8 +1076,7 @@ namespace zmq {
     BufferReference* bufref_;
   };
 
-  int
-  Socket::_send(void *socket, zmq_msg_t *msg, int flags) {
+  int Socket::_send(void *socket, zmq_msg_t *msg, int flags, int retry) {
   #if ZMQ_VERSION_MAJOR == 2
     if (zmq_send(socket, msg, flags) < 0) {
   #elif ZMQ_VERSION_MAJOR == 3
@@ -1064,8 +1084,8 @@ namespace zmq {
   #else
     if (zmq_msg_send(msg, socket, flags) < 0) {
   #endif
-      if (EINTR == zmq_errno()) {
-        return Socket::_send(socket, msg, flags);
+      if (EINTR == zmq_errno() && ZMQ_EINTR_RETRY_LIMIT) {
+        return Socket::_send(socket, msg, flags, retry+1);
       }
       return -1;
     }
