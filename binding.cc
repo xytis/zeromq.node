@@ -139,6 +139,7 @@ namespace zmq {
       class IncomingMessage;
       static NAN_METHOD(Recv);
       class OutgoingMessage;
+      static int _send(void *socket, zmq_msg_t *msg, int flags);
       static NAN_METHOD(Send);
       void Close();
       static NAN_METHOD(Close);
@@ -499,7 +500,7 @@ namespace zmq {
     size_t len = sizeof(T);
     if (zmq_getsockopt(socket_, option, &value, &len) < 0) {
       if (EINTR == zmq_errno()) {
-        return this->GetSockOpt<T>(option);
+        return GetSockOpt<T>(option);
       }
       NanThrowError(ExceptionFromError());
       return NanUndefined();
@@ -516,7 +517,7 @@ namespace zmq {
     T value = (T) wrappedValue->ToInteger()->Value();
     if (zmq_setsockopt(socket_, option, &value, sizeof(T)) < 0) {
       if (EINTR == zmq_errno()) {
-        return this->SetSockOpt<T>(option, wrappedValue);
+        return SetSockOpt<T>(option, wrappedValue);
       }
       NanThrowError(ExceptionFromError());
     }
@@ -529,7 +530,7 @@ namespace zmq {
     size_t len = sizeof(value) - 1;
     if (zmq_getsockopt(socket_, option, value, &len) < 0) {
       if (EINTR == zmq_errno()) {
-        return this->GetSockOpt<char*>(option);
+        return GetSockOpt<char*>(option);
       }
       NanThrowError(ExceptionFromError());
       return NanUndefined();
@@ -546,11 +547,12 @@ namespace zmq {
     }
     Local<Object> buf = wrappedValue->ToObject();
     size_t length = Buffer::Length(buf);
-    if (zmq_setsockopt(socket_, option, Buffer::Data(buf), length) < 0)
+    if (zmq_setsockopt(socket_, option, Buffer::Data(buf), length) < 0) {
       if (EINTR == zmq_errno()) {
-        return this->SetSockOpt<char*>(option, wrappedValue);
+        return SetSockOpt<char*>(option, wrappedValue);
       }
       NanThrowError(ExceptionFromError());
+    }
     return NanUndefined();
   }
 
@@ -1016,6 +1018,23 @@ namespace zmq {
     BufferReference* bufref_;
   };
 
+  int
+  Socket::_send(void *socket, zmq_msg_t *msg, int flags) {
+  #if ZMQ_VERSION_MAJOR == 2
+    if (zmq_send(socket, msg, flags) < 0) {
+  #elif ZMQ_VERSION_MAJOR == 3
+    if (zmq_sendmsg(socket, msg, flags) < 0) {
+  #else
+    if (zmq_msg_send(msg, socket, flags) < 0) {
+  #endif
+      if (EINTR == zmq_errno()) {
+        return Socket::_send(socket, msg, flags);
+      }
+      return -1;
+    }
+    return 0;
+  }
+
   // WARNING: the buffer passed here will be kept alive
   // until zmq_send completes, possibly on another thread.
   // Do not modify or reuse any buffer passed to send.
@@ -1055,19 +1074,9 @@ namespace zmq {
     const char * dat = Buffer::Data(buf);
     std::copy(dat, dat + len, cp);
 
-    #if ZMQ_VERSION_MAJOR == 2
-      if (zmq_send(socket->socket_, &msg, flags) < 0) {
-        return NanThrowError(ErrorMessage());
-      }
-    #elif ZMQ_VERSION_MAJOR == 3
-      if (zmq_sendmsg(socket->socket_, &msg, flags) < 0) {
-        return NanThrowError(ErrorMessage());
-      }
-    #else
-      if (zmq_msg_send(&msg, socket->socket_, flags) < 0) {
-        return NanThrowError(ErrorMessage());
-      }
-    #endif
+    if (Socket::_send(socket->socket_, &msg, flags) < 0) {
+      return NanThrowError(ErrorMessage());
+    };
 #endif // zero copy / copying version
 
     NanReturnUndefined();
