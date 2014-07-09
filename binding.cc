@@ -137,6 +137,7 @@ namespace zmq {
 #endif
 
       class IncomingMessage;
+      static int _recv(void *socket, zmq_msg_t *msg, int flags);
       static NAN_METHOD(Recv);
       class OutgoingMessage;
       static int _send(void *socket, zmq_msg_t *msg, int flags);
@@ -933,6 +934,23 @@ namespace zmq {
   }
 #endif
 
+  int
+  Socket::_recv(void *socket, zmq_msg_t *msg, int flags) {
+  #if ZMQ_VERSION_MAJOR == 2
+    if (zmq_recv(socket, msg, flags) < 0) {
+  #elif ZMQ_VERSION_MAJOR == 3
+    if (zmq_recvmsg(socket, msg, flags) < 0) {
+  #else
+    if (zmq_msg_recv(msg, socket, flags) < 0) {
+  #endif
+      if (EINTR == zmq_errno()) {
+        return Socket::_recv(socket, msg, flags);
+      }
+      return -1;
+    }
+    return 0;
+  }
+
   NAN_METHOD(Socket::Recv) {
     NanScope();
     int flags = 0;
@@ -948,15 +966,9 @@ namespace zmq {
     GET_SOCKET(args);
 
     IncomingMessage msg;
-    #if ZMQ_VERSION_MAJOR == 2
-      if (zmq_recv(socket->socket_, msg, flags) < 0) {
+    if (Socket::_recv(socket->socket_, msg, flags) < 0) {
         return NanThrowError(ErrorMessage());
-      }
-    #else
-      if (zmq_recvmsg(socket->socket_, msg, flags) < 0) {
-        return NanThrowError(ErrorMessage());
-      }
-    #endif
+    }
     NanReturnValue(msg.GetBuffer());
   }
 
